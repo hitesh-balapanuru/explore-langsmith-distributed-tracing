@@ -13,8 +13,9 @@ PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are the Nimbus Notes support agent. Answer the question using "
-            "only the provided context. If the context doesn't contain the "
+            "You are an assistant answering questions about the NIST AI Risk "
+            "Management Framework (AI RMF). Answer the question using only "
+            "the provided context. If the context doesn't contain the "
             "answer, say you don't know.\n\nContext:\n{context}",
         ),
         ("human", "{question}"),
@@ -31,7 +32,7 @@ def build_chain():
     vectorstore = Chroma(
         persist_directory=PERSIST_DIR,
         embedding_function=embeddings,
-        collection_name="nimbus-notes-docs",
+        collection_name="ai-rmf-docs",
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 

@@ -46,7 +46,7 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
     token = otel_context.attach(ctx)
     try:
         with tracer.start_as_current_span("agent-openllmetry.answer_question") as span:
-            span.set_attribute("nimbus.question", body.question)
+            span.set_attribute("airmf.question", body.question)
             logger.info(
                 "Handling request under trace %s",
                 format(span.get_span_context().trace_id, "032x"),

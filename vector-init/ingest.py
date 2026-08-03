@@ -33,7 +33,7 @@ def main() -> None:
         documents=chunks,
         embedding=embeddings,
         persist_directory=PERSIST_DIR,
-        collection_name="nimbus-notes-docs",
+        collection_name="ai-rmf-docs",
     )
     print(f"Wrote Chroma index to {PERSIST_DIR}")
 

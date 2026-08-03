@@ -77,8 +77,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Then open http://localhost:3000, ask a question about the sample "Nimbus
-Notes" docs in `docs/`, and pick which backend answers it.
+Then open http://localhost:3000, ask a question about the NIST AI Risk
+Management Framework (AI RMF) docs in `docs/`, and pick which backend
+answers it.
 
 Each response includes a `traceId` — look it up in your LangSmith project
 (`LANGSMITH_PROJECT` in `.env`, default `explore-langsmith-tracing`) to see
@@ -99,8 +100,9 @@ existing OTel pipeline, or both.
   more realistic browser-based version would run OTel Web SDK in the browser
   and export through a backend proxy (to avoid ever exposing
   `LANGSMITH_API_KEY` client-side) — left as an exercise.
-- `docs/` is a tiny fictional corpus; swap in real documents and the same
-  `vector-init` ingestion will pick them up (any `*.md` file under `docs/`).
+- `docs/` currently holds a small corpus on the NIST AI RMF (overview, FAQ,
+  core functions); swap in your own documents and the same `vector-init`
+  ingestion will pick them up (any `*.md` file under `docs/`).
 - Package versions pinned in each `requirements.txt` / `package.json` were
   current as of this repo's creation — the LangSmith and Traceloop SDKs move
   quickly, so check their docs if an API (e.g. `RunTree.from_headers`,

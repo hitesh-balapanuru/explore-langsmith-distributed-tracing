@@ -41,7 +41,7 @@ export async function withOtelOrigin<T>(
   return tracer.startActiveSpan(
     "frontend.answer_question",
     async (span: Span) => {
-      span.setAttribute("nimbus.question", question);
+      span.setAttribute("airmf.question", question);
       const headers: Record<string, string> = {};
       propagation.inject(context.active(), headers);
       const traceId = span.spanContext().traceId;
