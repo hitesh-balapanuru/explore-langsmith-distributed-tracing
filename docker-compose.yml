@@ -17,7 +17,9 @@ services:
       LANGCHAIN_TRACING_V2: "true"
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
       LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
-      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-distributed}
+      LANGSMITH_PROJECT_AGENT: ${LANGSMITH_PROJECT_AGENT:-agent}
+      LANGSMITH_PROJECT_VECTORDB: ${LANGSMITH_PROJECT_VECTORDB:-vector database}
     volumes:
       - faiss-index:/faiss-index:ro
     ports:
@@ -33,7 +35,9 @@ services:
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
       LANGSMITH_OTEL_ENDPOINT: ${LANGSMITH_OTEL_ENDPOINT:-https://api.smith.langchain.com/otel}
-      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-distributed}
+      LANGSMITH_PROJECT_AGENT: ${LANGSMITH_PROJECT_AGENT:-agent}
+      LANGSMITH_PROJECT_VECTORDB: ${LANGSMITH_PROJECT_VECTORDB:-vector database}
     volumes:
       - faiss-index:/faiss-index:ro
     ports:
@@ -51,7 +55,8 @@ services:
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
       LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
       LANGSMITH_OTEL_ENDPOINT: ${LANGSMITH_OTEL_ENDPOINT:-https://api.smith.langchain.com/otel}
-      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-distributed}
+      LANGSMITH_PROJECT_FRONTEND: ${LANGSMITH_PROJECT_FRONTEND:-frontend}
     ports:
       - "3000:3000"
 

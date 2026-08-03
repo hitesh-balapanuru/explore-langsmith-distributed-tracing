@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import express, { Request, Response } from "express";
 import path from "path";
 
@@ -37,12 +38,14 @@ app.post("/api/chat/langsmith", async (req: Request, res: Response) => {
     return;
   }
 
+  const requestId = randomUUID();
   try {
     const { result: answer, traceId } = await withLangsmithOrigin(
       question,
+      requestId,
       (headers) => callAgent(AGENT_LANGSMITH_URL, question, headers)
     );
-    res.json({ answer, traceId, instrumentation: "langsmith-sdk" });
+    res.json({ answer, traceId, requestId, instrumentation: "langsmith-sdk" });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -55,12 +58,14 @@ app.post("/api/chat/openllmetry", async (req: Request, res: Response) => {
     return;
   }
 
+  const requestId = randomUUID();
   try {
     const { result: answer, traceId } = await withOtelOrigin(
       question,
+      requestId,
       (headers) => callAgent(AGENT_OPENLLMETRY_URL, question, headers)
     );
-    res.json({ answer, traceId, instrumentation: "openllmetry-otel" });
+    res.json({ answer, traceId, requestId, instrumentation: "openllmetry-otel" });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

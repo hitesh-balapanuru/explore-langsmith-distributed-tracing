@@ -59,6 +59,10 @@ Node frontend and the Python agent, not two disconnected traces.
                               (OTLP ingestion)
 ```
 
+(This diagram shows the connected "distributed" trace only. Each service
+also duplicates its own work into a per-service project — see "Multi-project
+fan-out" below.)
+
 ## Services
 
 | Service | Language | Role |
@@ -81,9 +85,49 @@ Then open http://localhost:3000, ask a question about the NIST AI Risk
 Management Framework (AI RMF) docs in `docs/`, and pick which backend
 answers it.
 
-Each response includes a `traceId` — look it up in your LangSmith project
-(`LANGSMITH_PROJECT` in `.env`, default `explore-langsmith-tracing`) to see
-the full frontend → agent trace.
+Each response includes a `traceId` and a `requestId` — look the `traceId` up
+in the `LANGSMITH_PROJECT` project (default `distributed`) to see the full
+frontend → agent trace, or see "Multi-project fan-out" below for how to find
+this same request's copies in the other three projects.
+
+## Multi-project fan-out
+
+Beyond the one connected trace in the `distributed` project, every service
+also posts a duplicate of its own work into a **per-service LangSmith
+project** — `frontend`, `agent` (used by whichever agent handled the
+request), and `vector database` (retrieval only). That's 4 projects total,
+configured via `LANGSMITH_PROJECT`, `LANGSMITH_PROJECT_FRONTEND`,
+`LANGSMITH_PROJECT_AGENT`, and `LANGSMITH_PROJECT_VECTORDB` in `.env` — set
+these to match whatever you've already created in LangSmith if the names
+differ.
+
+This is a deliberate trade-off, not a LangSmith feature: **a trace belongs to
+exactly one project**, decided by its root run. There's no way to have one
+connected trace natively split across four projects, so getting a
+per-service view *and* a connected view means posting the data twice. The
+mechanism differs depending on which side of the repo you're looking at,
+which is itself an interesting SDK-comparison point:
+
+- **`agent-openllmetry` and `frontend`** (OpenTelemetry-based): the fan-out
+  is genuinely free. Each has a single `TracerProvider` with *multiple* span
+  processors registered on it — every span already being recorded gets
+  exported once per processor. No re-execution, no extra Anthropic calls,
+  just an extra OTLP POST per span per destination project.
+- **`agent-langsmith`** (native LangSmith SDK): harder, because a
+  `RunTree`/`@traceable` trace posts to one ambient project per execution
+  context — you can't have one live chain execution auto-instrument into two
+  projects with full nested detail. Instead, after the single chain
+  execution completes, the code manually posts *flat* summary runs (question
+  in, answer out, no nested retriever/model sub-spans) to the `agent` and
+  `vector database` projects via `Client.create_run`/`update_run`.
+
+**Correlating a request across all four projects**: every duplicate run
+carries the *same* `trace_id` as the connected trace (native SDK duplicates
+pass `trace_id=` explicitly; OTel duplicates get it for free since it's the
+same span), plus a `request_id` value in metadata as a fallback. In each
+project's trace search, filter by that trace ID or `request_id` to find this
+request's copy. There's no single UI that shows all four at once — this is
+manual, cross-project correlation, not native distributed tracing.
 
 ## Why two folders instead of one
 

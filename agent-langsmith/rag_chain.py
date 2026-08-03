@@ -5,7 +5,6 @@ from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableParallel, RunnablePassthrough
 
 PERSIST_DIR = "/faiss-index"
 
@@ -23,28 +22,24 @@ PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-def _format_docs(docs) -> str:
+def format_docs(docs) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
 
-def build_chain():
+def build_retriever():
+    """Kept separate from build_answer_chain() so the retrieval step can be
+    traced/duplicated to its own project independently of the prompt|model
+    step."""
     embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
     vectorstore = FAISS.load_local(
         PERSIST_DIR, embeddings, allow_dangerous_deserialization=True
     )
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+    return vectorstore.as_retriever(search_kwargs={"k": 4})
 
+
+def build_answer_chain():
     model = ChatAnthropic(
         model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
         max_tokens=1024,
     )
-
-    chain = (
-        RunnableParallel(
-            context=retriever | _format_docs, question=RunnablePassthrough()
-        )
-        | PROMPT
-        | model
-        | StrOutputParser()
-    )
-    return chain
+    return PROMPT | model | StrOutputParser()
