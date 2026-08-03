@@ -101,55 +101,74 @@ configured via `LANGSMITH_PROJECT`, `LANGSMITH_PROJECT_FRONTEND`,
 these to match whatever you've already created in LangSmith if the names
 differ.
 
-This is a deliberate trade-off, not a LangSmith feature: **a trace belongs to
-exactly one project**, decided by its root run, and (confirmed against a
-real LangSmith account, the hard way) **a run's identity can't be
-transplanted into another project's trace** either. Three things that seem
-like they should work don't:
+This is a deliberate trade-off, not a LangSmith feature you get for free:
+**a trace belongs to exactly one project**, decided by its root run. Getting
+a per-service view *and* a connected view means posting the data twice, and
+the two sides of this repo do that two different ways — one native, one
+hand-rolled, which is itself an interesting comparison point.
+
+### `agent-openllmetry` and `frontend`'s OTel path: hand-rolled duplication
+
+OpenTelemetry has no first-class "write to multiple projects" primitive, so
+this side manually emits a **second span with a fresh, unrelated trace_id**
+after the real one ends (an explicit empty/root context — `Context()` in
+Python, `ROOT_CONTEXT` in JS — forces the SDK to mint a new one instead of
+inheriting the real trace), through a dedicated single-exporter
+`TracerProvider` pointed at the per-service project. Two things that seem
+like they should work instead don't, confirmed against a real account:
 
 - Registering a *second* `SpanProcessor` on the same `TracerProvider` and
   re-exporting the exact same span to a second project's OTLP endpoint gets
   rejected with `409 Run create payload already received` — LangSmith's OTLP
   ingestion treats `(trace_id, span_id)` as globally unique, not scoped per
   project.
-- Passing an explicit `trace_id` on a fresh, unparented run/RunTree (native
-  SDK) gets rejected with `400 invalid dotted_order` — the API requires
-  `dotted_order` you don't have unless you also compute it yourself.
 - Emitting a *separate* span with a fresh span_id but the SAME trace_id as
   the real trace (via a fake parent context) *is* accepted — no error — but
   it silently lands in whichever project's span for that trace_id LangSmith's
   backend saw first, ignoring this new span's own `Langsmith-Project`
-  header. In other words, LangSmith appears to pin **project ownership per
-  trace_id**, not per span: the first project to see a trace_id claims every
-  later span sharing it, headers notwithstanding. This one took direct
-  `list_runs()` queries against a real account to catch, since nothing in
-  the logs indicates a misroute — the export just "succeeds."
+  header. LangSmith appears to pin **project ownership per trace_id**, not
+  per span. This one took direct `list_runs()` queries against a real
+  account to catch, since nothing in the logs indicates a misroute — the
+  export just "succeeds."
 
-So every duplicate is its own real, fully independent run with its own
-trace_id — no duplicate anywhere in this repo shares the real trace_id, on
-either side:
+### `agent-langsmith` and `frontend`'s LangSmith path: native `replicas`
 
-- **`agent-openllmetry` and `frontend`** (OpenTelemetry-based): after the
-  real span ends, a *second*, dedicated single-exporter `TracerProvider`
-  (pointed at the per-service project) manually emits a **new span with a
-  fresh, unrelated trace_id** (an explicit empty/root context — `Context()`
-  in Python, `ROOT_CONTEXT` in JS — forces the SDK to mint a new one instead
-  of inheriting the real trace). One extra OTLP POST per duplicate, no
-  re-execution.
-- **`agent-langsmith`** (native LangSmith SDK): after the single chain
-  execution completes, the code posts *flat* summary runs (question in,
-  answer out, no nested retriever/model sub-spans) to the `agent` and
-  `vector_database` projects via `Client.create_run`/`update_run` — each as
-  its own fresh root run.
+The native LangSmith SDK *does* have a first-class mechanism for this:
+`tracing_context(replicas=[...])` in Python, and a `replicas` field directly
+on `RunTree`/`traceable()` in both languages. A `WriteReplica` entry is
+`{"project_name": ..., "primary": bool, "reroot": bool, ...}` (JS:
+`projectName`/`reroot`, same idea) — `primary=True` keeps the real run/trace
+ids as-is; without it, the SDK computes a **deterministic secondary run_id**
+from the primary's (via `compute_run_id_for_secondary_replica`), so
+correlating a duplicate back to its primary doesn't need any metadata hack
+at all. Passing a list of replicas **replaces** the default single
+destination entirely, so the primary project has to be listed explicitly.
 
-**Correlating a request across all four projects**: since no duplicate
-shares the real trace_id, every run in every project (real or duplicate)
-gets a `request_id` metadata field, plus a `distributed_trace_id` field
-holding the real connected trace's id for reference. This is the *only*
-correlation mechanism — filter by either value in each project's trace
-search to find a given request's copy. There's no single UI that shows all
-four at once — this is manual, cross-project correlation, not native
-distributed tracing.
+`reroot: True` matters specifically because forcing an explicit `trace_id`
+onto a fresh, unparented run gets rejected with `400 invalid dotted_order`
+(the API needs a `dotted_order` you don't have unless you compute it
+yourself) — `reroot` strips the parent link and makes that replica its own
+independent trace root in its project, sidestepping the problem entirely.
+
+One non-obvious gotcha, found by reading `langsmith/run_helpers.py` +
+`run_trees.py`: a `@traceable` call that has a parent (via
+`langsmith_extra={"parent": ...}`, or an ambient current run) builds its
+`RunTree` via `parent.create_child(...)`, which sets
+`replicas=self.replicas` — it inherits from the **parent object's own
+`.replicas` attribute**, not from the ambient `tracing_context(replicas=
+...)` contextvar. Since a `RunTree` reconstructed from cross-service headers
+has `replicas=None`, `answer_question`'s own run would otherwise silently
+fall back to single-destination posting even inside a `tracing_context`
+block — LangChain's callback-based auto-tracing (the `ChatAnthropic`/
+`ChatPromptTemplate`/etc spans) goes through a different path that *does*
+read the contextvar fresh, so those spans replicate correctly on their own.
+The fix (see `agent-langsmith/app.py`) is to set `.replicas` directly on the
+relevant parent `RunTree` object before calling the child.
+
+**Net result, confirmed live**: `agent`/`vector_database` projects now get
+the *full* nested run tree (not a flat summary) as their own independently
+rooted copy — richer than the hand-rolled version ever produced, and about
+a third of the code.
 
 ## Why two folders instead of one
 

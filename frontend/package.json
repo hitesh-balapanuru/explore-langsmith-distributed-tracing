@@ -17,7 +17,7 @@
     "@opentelemetry/sdk-trace-node": "1.28.0",
     "@opentelemetry/semantic-conventions": "1.28.0",
     "express": "4.21.2",
-    "langsmith": "0.3.7"
+    "langsmith": "0.8.9"
   },
   "devDependencies": {
     "@types/express": "5.0.0",
