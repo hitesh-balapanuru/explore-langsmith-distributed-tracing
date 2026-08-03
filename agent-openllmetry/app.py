@@ -10,9 +10,14 @@ every span Traceloop records here is a child of the frontend's span in the
 same trace, landing in LANGSMITH_PROJECT (the "distributed" project).
 
 Multi-project fan-out (see tracing_init.py): after the real work finishes, we
-manually emit two duplicate spans sharing the same trace_id -- one for the
-whole request into LANGSMITH_PROJECT_AGENT, one for just retrieval into
-LANGSMITH_PROJECT_VECTORDB.
+manually emit two duplicate spans -- one for the whole request into
+LANGSMITH_PROJECT_AGENT, one for just retrieval into
+LANGSMITH_PROJECT_VECTORDB. Each gets its own independent trace_id (sharing
+the real trace_id was tried and confirmed broken: LangSmith's OTLP ingestion
+pins project ownership per trace_id to whichever project's span for that
+trace_id it saw first, so a same-trace_id duplicate just gets swept into
+that project too instead of its intended one). Correlation with the
+connected trace relies on `request_id`/`distributed_trace_id` attributes.
 """
 
 import logging
@@ -64,10 +69,8 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
             span.set_attribute("airmf.question", body.question)
             span.set_attribute("langsmith.metadata.request_id", request_id)
             trace_id = span.get_span_context().trace_id
-            answer_span_id = span.get_span_context().span_id
-            logger.info(
-                "Handling request under trace %s", format(trace_id, "032x")
-            )
+            distributed_trace_id = format(trace_id, "032x")
+            logger.info("Handling request under trace %s", distributed_trace_id)
 
             retrieve_start_ns = time.time_ns()
             with tracer.start_as_current_span(
@@ -78,7 +81,6 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
                 )
                 docs = retriever.invoke(body.question)
                 retrieve_span.set_attribute("airmf.retrieved_count", len(docs))
-                retrieve_span_id = retrieve_span.get_span_context().span_id
             retrieve_end_ns = time.time_ns()
 
             context = format_docs(docs)
@@ -93,22 +95,23 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
         duplicate_span(
             "agent",
             "agent-openllmetry.answer_question",
-            trace_id,
-            answer_span_id,
             answer_start_ns,
             answer_end_ns,
-            {"airmf.question": body.question, "langsmith.metadata.request_id": request_id},
+            {
+                "airmf.question": body.question,
+                "langsmith.metadata.request_id": request_id,
+                "langsmith.metadata.distributed_trace_id": distributed_trace_id,
+            },
         )
         duplicate_span(
             "vectordb",
             "agent-openllmetry.retrieve",
-            trace_id,
-            retrieve_span_id,
             retrieve_start_ns,
             retrieve_end_ns,
             {
                 "airmf.retrieved_count": len(docs),
                 "langsmith.metadata.request_id": request_id,
+                "langsmith.metadata.distributed_trace_id": distributed_trace_id,
             },
         )
     except Exception:

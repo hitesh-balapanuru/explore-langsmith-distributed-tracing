@@ -7,21 +7,32 @@
  *
  * Multi-project fan-out: the real span is exported to LANGSMITH_PROJECT
  * ("distributed") only. A second, dedicated single-exporter TracerProvider
- * is used to emit a *separate* duplicate span into LANGSMITH_PROJECT_FRONTEND
- * after the real span ends -- sharing the same trace_id but with a fresh
- * span_id (via `trace.wrapSpanContext` as a fake parent). Registering a
- * second SpanProcessor on the SAME provider and re-exporting the identical
- * span object was tried first and rejected by LangSmith with `409 Run
- * create payload already received` -- its OTLP ingestion treats
- * (trace_id, span_id) as a globally unique run, not scoped per project.
+ * emits a *separate* duplicate span into LANGSMITH_PROJECT_FRONTEND after the
+ * real span ends. Two things were tried and confirmed broken against a real
+ * LangSmith account before this:
+ *
+ *   1. A second SpanProcessor on the SAME provider re-exporting the
+ *      identical span -> `409 Run create payload already received`
+ *      (LangSmith's OTLP ingestion treats trace_id+span_id as a globally
+ *      unique run, not scoped per project).
+ *   2. A duplicate span sharing the real trace_id (via `trace.wrapSpanContext`
+ *      as a fake parent) but a fresh span_id -> accepted, but silently
+ *      landed in whichever project's span for that trace_id LangSmith saw
+ *      first, ignoring this span's own Langsmith-Project header. Project
+ *      ownership appears pinned per trace_id, not per span.
+ *
+ * What works: the duplicate gets its own independent trace_id (a genuine
+ * new root, via `ROOT_CONTEXT`). Correlation with the connected trace relies
+ * on `request_id`/`distributed_trace_id` attributes instead of a shared
+ * trace_id -- the same fallback the native-SDK side already needed.
  */
 
 import {
   trace,
   context,
   propagation,
+  ROOT_CONTEXT,
   Span,
-  SpanContext,
 } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Resource } from "@opentelemetry/resources";
@@ -62,16 +73,11 @@ const frontendTracer = frontendProvider.getTracer("frontend-trace-origin.duplica
 
 function duplicateSpan(
   name: string,
-  realSpanContext: SpanContext,
   startTime: number,
   endTime: number,
   attributes: Record<string, string | number>
 ): void {
-  const fakeParentContext = trace.setSpan(
-    context.active(),
-    trace.wrapSpanContext(realSpanContext)
-  );
-  const span = frontendTracer.startSpan(name, { startTime }, fakeParentContext);
+  const span = frontendTracer.startSpan(name, { startTime }, ROOT_CONTEXT);
   span.setAttributes(attributes);
   span.end(endTime);
 }
@@ -89,8 +95,7 @@ export async function withOtelOrigin<T>(
       span.setAttribute("langsmith.metadata.request_id", requestId);
       const headers: Record<string, string> = { "x-request-id": requestId };
       propagation.inject(context.active(), headers);
-      const spanContext = span.spanContext();
-      const traceId = spanContext.traceId;
+      const traceId = span.spanContext().traceId;
 
       try {
         const result = await fn(headers);
@@ -102,12 +107,12 @@ export async function withOtelOrigin<T>(
         span.end();
         duplicateSpan(
           "frontend.answer_question",
-          spanContext,
           startTime,
           Date.now(),
           {
             "airmf.question": question,
             "langsmith.metadata.request_id": requestId,
+            "langsmith.metadata.distributed_trace_id": traceId,
           }
         );
       }

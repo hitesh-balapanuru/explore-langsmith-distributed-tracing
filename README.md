@@ -103,9 +103,9 @@ differ.
 
 This is a deliberate trade-off, not a LangSmith feature: **a trace belongs to
 exactly one project**, decided by its root run, and (confirmed against a
-real LangSmith account) **a run's identity can't be transplanted into
-another project's trace** either. Two things that seem like they should work
-don't:
+real LangSmith account, the hard way) **a run's identity can't be
+transplanted into another project's trace** either. Three things that seem
+like they should work don't:
 
 - Registering a *second* `SpanProcessor` on the same `TracerProvider` and
   re-exporting the exact same span to a second project's OTLP endpoint gets
@@ -115,35 +115,41 @@ don't:
 - Passing an explicit `trace_id` on a fresh, unparented run/RunTree (native
   SDK) gets rejected with `400 invalid dotted_order` — the API requires
   `dotted_order` you don't have unless you also compute it yourself.
+- Emitting a *separate* span with a fresh span_id but the SAME trace_id as
+  the real trace (via a fake parent context) *is* accepted — no error — but
+  it silently lands in whichever project's span for that trace_id LangSmith's
+  backend saw first, ignoring this new span's own `Langsmith-Project`
+  header. In other words, LangSmith appears to pin **project ownership per
+  trace_id**, not per span: the first project to see a trace_id claims every
+  later span sharing it, headers notwithstanding. This one took direct
+  `list_runs()` queries against a real account to catch, since nothing in
+  the logs indicates a misroute — the export just "succeeds."
 
-So every duplicate is its own real, independent run, and the two sides of
-the repo get there differently (itself an interesting SDK-comparison point):
+So every duplicate is its own real, fully independent run with its own
+trace_id — no duplicate anywhere in this repo shares the real trace_id, on
+either side:
 
 - **`agent-openllmetry` and `frontend`** (OpenTelemetry-based): after the
   real span ends, a *second*, dedicated single-exporter `TracerProvider`
-  (pointed at the per-service project) manually emits a **new span that
-  shares the real trace_id but gets a fresh span_id** — done by wrapping the
-  real span's `SpanContext` as a fake parent (`trace.wrapSpanContext` /
-  Python's `NonRecordingSpan`) so the new span inherits `trace_id` without
-  colliding on `span_id`. One extra OTLP POST per duplicate, no
+  (pointed at the per-service project) manually emits a **new span with a
+  fresh, unrelated trace_id** (an explicit empty/root context — `Context()`
+  in Python, `ROOT_CONTEXT` in JS — forces the SDK to mint a new one instead
+  of inheriting the real trace). One extra OTLP POST per duplicate, no
   re-execution.
 - **`agent-langsmith`** (native LangSmith SDK): after the single chain
   execution completes, the code posts *flat* summary runs (question in,
   answer out, no nested retriever/model sub-spans) to the `agent` and
   `vector_database` projects via `Client.create_run`/`update_run` — each as
-  its **own root run with its own trace_id**, since a matching trace_id
-  isn't achievable here without a hand-computed `dotted_order`.
+  its own fresh root run.
 
-**Correlating a request across all four projects**: the OTel-based
-duplicates (`agent-openllmetry`, `frontend`) do share the real trace_id, so
-those can be found by trace ID. The native-SDK duplicates (`agent-langsmith`
-and frontend's LangSmith-path copy) cannot share it, so use the
-`request_id` metadata field instead — it's stamped on every run in every
-project regardless of instrumentation, making it the one correlation key
-that works everywhere. The real distributed trace_id is also echoed into
-those runs' metadata (`distributed_trace_id`) for reference. There's no
-single UI that shows all four at once — this is manual, cross-project
-correlation, not native distributed tracing.
+**Correlating a request across all four projects**: since no duplicate
+shares the real trace_id, every run in every project (real or duplicate)
+gets a `request_id` metadata field, plus a `distributed_trace_id` field
+holding the real connected trace's id for reference. This is the *only*
+correlation mechanism — filter by either value in each project's trace
+search to find a given request's copy. There's no single UI that shows all
+four at once — this is manual, cross-project correlation, not native
+distributed tracing.
 
 ## Why two folders instead of one
 

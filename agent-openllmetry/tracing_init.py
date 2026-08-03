@@ -1,34 +1,41 @@
 """Initializes OpenLLMetry (Traceloop SDK) with traces exported directly to
 LangSmith's OTLP ingestion endpoint (the "distributed" project only).
 
-Multi-project fan-out: LangSmith's OTLP ingestion identifies a run by
-(trace_id, span_id) GLOBALLY, not per-project. Registering a second
-SpanProcessor on the same TracerProvider and re-exporting the *same* span
-object to a second project's OTLP endpoint gets rejected with
-`409 Run create payload already received` -- this was tried first and
-confirmed broken against a real LangSmith account.
+Multi-project fan-out: two mechanisms were tried and confirmed broken
+against a real LangSmith account before landing on the one below:
 
-The actual working mechanism: after the real span finishes, manually emit a
-*separate* span that shares the same trace_id but gets a fresh span_id (via
-a NonRecordingSpan used as a fake parent context), sent through its own
-dedicated single-project TracerProvider. Different span_id means LangSmith
-sees a distinct run, so no collision -- see duplicate_span() below. This
-must run before rag_chain's build_answer_chain()/build_retriever(), since
-Traceloop patches the LangChain/Anthropic clients on init.
+1. Registering a second SpanProcessor on the same TracerProvider and
+   re-exporting the *same* span object to a second project -> rejected with
+   `409 Run create payload already received` (LangSmith's OTLP ingestion
+   treats trace_id+span_id as a globally unique run, not scoped per
+   project).
+2. Emitting a *separate* span with a fresh span_id but the SAME trace_id as
+   the real trace (via a NonRecordingSpan fake parent) -> accepted (no
+   error), but silently landed in whichever project's span for that
+   trace_id LangSmith's backend saw first, ignoring this span's own
+   Langsmith-Project header. LangSmith appears to pin project ownership per
+   trace_id, not per span -- so ANY duplicate sharing the real trace_id gets
+   swept into whichever project already claimed it.
+
+What actually works: each duplicate gets its OWN independent trace_id (a
+genuinely new root span, no parent context at all), sent through its own
+dedicated single-project TracerProvider. There is no trace_id linkage to
+the connected trace anymore -- correlation relies entirely on the
+`request_id` / `distributed_trace_id` attributes stamped on the span (see
+app.py), which is the same correlation mechanism the native SDK side
+(agent-langsmith) already has to use for the same underlying reason.
+
+This must run before rag_chain's build_answer_chain()/build_retriever(),
+since Traceloop patches the LangChain/Anthropic clients on init.
 """
 
 import os
 
+from opentelemetry.context import Context
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.trace import (
-    NonRecordingSpan,
-    SpanContext,
-    TraceFlags,
-    set_span_in_context,
-)
 from traceloop.sdk import Traceloop
 
 _tracers: dict = {}
@@ -77,23 +84,14 @@ def init_tracing() -> None:
 def duplicate_span(
     project: str,
     name: str,
-    trace_id: int,
-    parent_span_id: int,
     start_time_ns: int,
     end_time_ns: int,
     attributes: dict,
 ) -> None:
-    """Emits a standalone span sharing `trace_id` with the real trace, but
-    with a fresh span_id, into `project` ("agent" or "vectordb")."""
+    """Emits a standalone span with its OWN fresh trace_id (a genuine new
+    root, no parent context) into `project` ("agent" or "vectordb")."""
     tracer = _tracers[project]
-    fake_parent_ctx = SpanContext(
-        trace_id=trace_id,
-        span_id=parent_span_id,
-        is_remote=True,
-        trace_flags=TraceFlags(TraceFlags.SAMPLED),
-    )
-    parent_context = set_span_in_context(NonRecordingSpan(fake_parent_ctx))
     span = tracer.start_span(
-        name, context=parent_context, start_time=start_time_ns, attributes=attributes
+        name, context=Context(), start_time=start_time_ns, attributes=attributes
     )
     span.end(end_time=end_time_ns)
