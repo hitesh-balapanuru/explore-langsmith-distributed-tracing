@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Nimbus Notes Agent — Trace Origin</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+  textarea { width: 100%; height: 80px; font-size: 14px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  button { padding: 8px 14px; cursor: pointer; }
+  .answer { white-space: pre-wrap; border: 1px solid #ccc; border-radius: 6px; padding: 12px; margin-top: 16px; }
+  .meta { color: #666; font-size: 12px; margin-top: 8px; }
+  code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <h1>Nimbus Notes Agent — Trace Origin</h1>
+  <p>Ask a question about the sample Nimbus Notes docs. Pick which backend
+     handles it — both answer the same way, but each is traced with a
+     different instrumentation path into LangSmith.</p>
+
+  <textarea id="question" placeholder="e.g. How long do deleted notes stay in Trash?"></textarea>
+  <div class="row">
+    <button id="ask-langsmith">Ask via agent-langsmith</button>
+    <button id="ask-openllmetry">Ask via agent-openllmetry</button>
+  </div>
+
+  <div id="output"></div>
+
+  <script>
+    async function ask(endpoint) {
+      const question = document.getElementById('question').value.trim();
+      const output = document.getElementById('output');
+      if (!question) return;
+      output.innerHTML = '<p class="meta">Asking...</p>';
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ question }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || resp.statusText);
+        output.innerHTML =
+          '<div class="answer">' + data.answer.replace(/</g, '&lt;') + '</div>' +
+          '<div class="meta">instrumentation: <code>' + data.instrumentation +
+          '</code> &middot; trace id: <code>' + data.traceId +
+          '</code> &middot; look this up in your LangSmith project to see the full ' +
+          'frontend&rarr;agent trace.</div>';
+      } catch (err) {
+        output.innerHTML = '<p class="meta">Error: ' + err.message + '</p>';
+      }
+    }
+
+    document.getElementById('ask-langsmith').addEventListener('click', () => ask('/api/chat/langsmith'));
+    document.getElementById('ask-openllmetry').addEventListener('click', () => ask('/api/chat/openllmetry'));
+  </script>
+</body>
+</html>

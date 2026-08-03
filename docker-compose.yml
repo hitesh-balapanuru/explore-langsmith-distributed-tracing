@@ -1,0 +1,59 @@
+services:
+  vector-init:
+    build: ./vector-init
+    volumes:
+      - ./docs:/docs:ro
+      - chroma-data:/chroma-data
+
+  agent-langsmith:
+    build: ./agent-langsmith
+    depends_on:
+      vector-init:
+        condition: service_completed_successfully
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      LANGSMITH_TRACING: "true"
+      LANGCHAIN_TRACING_V2: "true"
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
+    volumes:
+      - chroma-data:/chroma-data:ro
+    ports:
+      - "8001:8001"
+
+  agent-openllmetry:
+    build: ./agent-openllmetry
+    depends_on:
+      vector-init:
+        condition: service_completed_successfully
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_OTEL_ENDPOINT: ${LANGSMITH_OTEL_ENDPOINT:-https://api.smith.langchain.com/otel}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
+    volumes:
+      - chroma-data:/chroma-data:ro
+    ports:
+      - "8002:8002"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - agent-langsmith
+      - agent-openllmetry
+    environment:
+      PORT: "3000"
+      AGENT_LANGSMITH_URL: http://agent-langsmith:8001
+      AGENT_OPENLLMETRY_URL: http://agent-openllmetry:8002
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+      LANGSMITH_OTEL_ENDPOINT: ${LANGSMITH_OTEL_ENDPOINT:-https://api.smith.langchain.com/otel}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
+    ports:
+      - "3000:3000"
+
+volumes:
+  chroma-data:
