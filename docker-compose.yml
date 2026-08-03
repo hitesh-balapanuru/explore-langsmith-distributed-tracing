@@ -3,7 +3,7 @@ services:
     build: ./vector-init
     volumes:
       - ./docs:/docs:ro
-      - chroma-data:/chroma-data
+      - faiss-index:/faiss-index
 
   agent-langsmith:
     build: ./agent-langsmith
@@ -19,7 +19,7 @@ services:
       LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
     volumes:
-      - chroma-data:/chroma-data:ro
+      - faiss-index:/faiss-index:ro
     ports:
       - "8001:8001"
 
@@ -35,7 +35,7 @@ services:
       LANGSMITH_OTEL_ENDPOINT: ${LANGSMITH_OTEL_ENDPOINT:-https://api.smith.langchain.com/otel}
       LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-explore-langsmith-tracing}
     volumes:
-      - chroma-data:/chroma-data:ro
+      - faiss-index:/faiss-index:ro
     ports:
       - "8002:8002"
 
@@ -56,4 +56,4 @@ services:
       - "3000:3000"
 
 volumes:
-  chroma-data:
+  faiss-index:

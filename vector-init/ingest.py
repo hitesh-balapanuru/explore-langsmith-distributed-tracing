@@ -1,4 +1,4 @@
-"""Builds a local Chroma index from the shared docs/ corpus.
+"""Builds a local FAISS index from the shared docs/ corpus.
 
 Runs once as a one-shot container before the agent services start, so both
 agent-langsmith and agent-openllmetry can mount the resulting index read-only
@@ -9,11 +9,11 @@ import pathlib
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.embeddings import FastEmbedEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import MarkdownTextSplitter
 
 DOCS_DIR = pathlib.Path("/docs")
-PERSIST_DIR = "/chroma-data"
+PERSIST_DIR = "/faiss-index"
 
 
 def main() -> None:
@@ -29,13 +29,9 @@ def main() -> None:
 
     embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
-    Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        persist_directory=PERSIST_DIR,
-        collection_name="ai-rmf-docs",
-    )
-    print(f"Wrote Chroma index to {PERSIST_DIR}")
+    vectorstore = FAISS.from_documents(documents=chunks, embedding=embeddings)
+    vectorstore.save_local(PERSIST_DIR)
+    print(f"Wrote FAISS index to {PERSIST_DIR}")
 
 
 if __name__ == "__main__":

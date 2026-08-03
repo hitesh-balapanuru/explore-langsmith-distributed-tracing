@@ -50,7 +50,7 @@ Node frontend and the Python agent, not two disconnected traces.
                           │                          │
                           ▼                          ▼
                   ┌───────────────────────────────────────┐
-                  │      Chroma index (shared volume)      │
+                  │      FAISS index (shared volume)       │
                   │   built once by vector-init from docs/ │
                   └───────────────────────────────────────┘
                           │                          │
@@ -63,7 +63,7 @@ Node frontend and the Python agent, not two disconnected traces.
 
 | Service | Language | Role |
 |---|---|---|
-| `vector-init` | Python | One-shot job: embeds `docs/*.md` (via local `fastembed` model, no external embeddings API) into a Chroma index on a shared volume, then exits |
+| `vector-init` | Python | One-shot job: embeds `docs/*.md` (via local `fastembed` model, no external embeddings API) into a FAISS index on a shared volume, then exits |
 | `agent-langsmith` | Python / FastAPI / LangChain | RAG agent, `ChatAnthropic`, traced with the LangSmith SDK |
 | `agent-openllmetry` | Python / FastAPI / LangChain | Same RAG agent, traced with OpenLLMetry (Traceloop SDK) → OTLP → LangSmith |
 | `frontend` | TypeScript / Express | Trace origin + minimal chat UI, proxies to both agents |

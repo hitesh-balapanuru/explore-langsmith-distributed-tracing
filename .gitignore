@@ -4,4 +4,4 @@ dist/
 __pycache__/
 *.pyc
 .DS_Store
-chroma-data/
+faiss-index/

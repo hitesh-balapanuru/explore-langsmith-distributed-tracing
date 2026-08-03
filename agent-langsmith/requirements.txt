@@ -3,7 +3,7 @@ uvicorn[standard]==0.34.0
 langchain-core==0.3.41
 langchain-community==0.3.19
 langchain-anthropic==0.3.7
-chromadb==0.5.23
+faiss-cpu==1.9.0
 fastembed==0.4.2
 langsmith==0.3.11
 pydantic==2.10.6
