@@ -25,6 +25,15 @@
  * new root, via `ROOT_CONTEXT`). Correlation with the connected trace relies
  * on `request_id`/`distributed_trace_id` attributes instead of a shared
  * trace_id -- the same fallback the native-SDK side already needed.
+ *
+ * Input/output: LangSmith's OTLP ingestion reads the `traceloop.entity.input`
+ * / `traceloop.entity.output` span attributes (JSON-encoded strings) to
+ * populate its Input/Output UI for non-LLM spans -- this is the same
+ * convention Traceloop's own Python LangChain instrumentation uses (visible
+ * on the nested ChatPromptTemplate/RunnableSequence/StrOutputParser spans
+ * agent-openllmetry produces). Without setting these explicitly, our own
+ * manually-created spans show up with empty Input/Output despite the nested
+ * LLM/chain spans underneath having it populated correctly.
  */
 
 import {
@@ -71,6 +80,9 @@ frontendProvider.addSpanProcessor(
 );
 const frontendTracer = frontendProvider.getTracer("frontend-trace-origin.duplicates");
 
+const ENTITY_INPUT = "traceloop.entity.input";
+const ENTITY_OUTPUT = "traceloop.entity.output";
+
 function duplicateSpan(
   name: string,
   startTime: number,
@@ -91,29 +103,35 @@ export async function withOtelOrigin<T>(
   return tracer.startActiveSpan(
     "frontend.answer_question",
     async (span: Span) => {
-      span.setAttribute("airmf.question", question);
       span.setAttribute("langsmith.metadata.request_id", requestId);
+      span.setAttribute(ENTITY_INPUT, JSON.stringify({ question }));
       const headers: Record<string, string> = { "x-request-id": requestId };
       propagation.inject(context.active(), headers);
       const traceId = span.spanContext().traceId;
+      let result: T | undefined;
 
       try {
-        const result = await fn(headers);
+        result = await fn(headers);
+        span.setAttribute(ENTITY_OUTPUT, JSON.stringify({ answer: result }));
         return { result, traceId };
       } catch (err) {
         span.recordException(err as Error);
         throw err;
       } finally {
         span.end();
+        const duplicateAttributes: Record<string, string> = {
+          [ENTITY_INPUT]: JSON.stringify({ question }),
+          "langsmith.metadata.request_id": requestId,
+          "langsmith.metadata.distributed_trace_id": traceId,
+        };
+        if (result !== undefined) {
+          duplicateAttributes[ENTITY_OUTPUT] = JSON.stringify({ answer: result });
+        }
         duplicateSpan(
           "frontend.answer_question",
           startTime,
           Date.now(),
-          {
-            "airmf.question": question,
-            "langsmith.metadata.request_id": requestId,
-            "langsmith.metadata.distributed_trace_id": traceId,
-          }
+          duplicateAttributes
         );
       }
     }
