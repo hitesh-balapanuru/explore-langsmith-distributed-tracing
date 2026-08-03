@@ -7,10 +7,14 @@
  * Python agent.
  *
  * Multi-project fan-out: after that connected trace completes, we ALSO post
- * a second, standalone RunTree (no parent) to LANGSMITH_PROJECT_FRONTEND, a
- * per-service copy sharing the same trace_id (plus a `request_id` metadata
- * field) purely so it can be correlated with the connected trace by hand --
- * LangSmith has no native cross-project trace view.
+ * a second, standalone RunTree to LANGSMITH_PROJECT_FRONTEND, a per-service
+ * copy. It gets its OWN trace_id (its own root) rather than reusing the
+ * connected trace's -- LangSmith's create_run API rejects an
+ * explicit/mismatched trace_id on an unparented run unless a matching
+ * `dotted_order` is also supplied (confirmed against a real account: `400
+ * invalid dotted_order`). So correlation with the connected trace relies on
+ * the shared `request_id` metadata field (plus the real trace_id, stamped
+ * into metadata for reference), not trace_id equality.
  */
 
 import { Client, RunTree } from "langsmith";
@@ -60,9 +64,10 @@ export async function withLangsmithOrigin<T>(
     run_type: "chain",
     inputs: { question },
     project_name: FRONTEND_PROJECT,
-    trace_id: traceId,
     client,
-    extra: { metadata: { request_id: requestId } },
+    extra: {
+      metadata: { request_id: requestId, distributed_trace_id: traceId },
+    },
     tags: ["duplicate", "instrumentation:langsmith-sdk"],
   });
   await frontendCopy.postRun();

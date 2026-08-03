@@ -12,12 +12,15 @@ two deliberate duplicates -- a flat summary run in LANGSMITH_PROJECT_AGENT
 (this service's own project) and a flat summary run in
 LANGSMITH_PROJECT_VECTORDB (retrieval only). Both are manually constructed
 from data already produced by the ONE chain execution above (no second
-Anthropic call), and carry the same trace_id plus a `request_id` metadata
-field so they can be correlated with the connected trace by hand --
-LangSmith has no native cross-project trace view. Unlike the OTel side
-(agent-openllmetry), these duplicates are flat single runs, not full nested
-subtrees, because the LangSmith SDK's automatic instrumentation is tied to
-one ambient project per execution context.
+Anthropic call).
+
+Note these are each their OWN root run (their own trace_id), not the same
+trace_id as the connected trace: LangSmith's create_run API rejects an
+explicit trace_id on an unparented run unless you also supply a matching
+`dotted_order` (confirmed against a real account -- `400 invalid
+dotted_order`). So correlation across all four projects here relies on the
+shared `request_id` metadata field, not trace_id equality. The real
+distributed trace_id is also stamped into metadata for reference.
 """
 
 import logging
@@ -42,7 +45,7 @@ answer_chain = build_answer_chain()
 client = Client()
 
 AGENT_PROJECT = os.environ.get("LANGSMITH_PROJECT_AGENT", "agent")
-VECTORDB_PROJECT = os.environ.get("LANGSMITH_PROJECT_VECTORDB", "vector database")
+VECTORDB_PROJECT = os.environ.get("LANGSMITH_PROJECT_VECTORDB", "vector_database")
 
 
 class QueryRequest(BaseModel):
@@ -68,14 +71,15 @@ def _log_duplicate_run(
     name: str,
     inputs: dict,
     outputs: dict,
-    trace_id: str,
+    distributed_trace_id: str,
     request_id: str,
 ) -> None:
     """Manually posts a single, flat, already-completed run to another
-    project. This intentionally does NOT re-run any LangChain step -- it
-    just logs a record of work that already happened, so LangSmith API
-    version differences in create_run/update_run are the only risk here,
-    not extra cost."""
+    project, as its own root (own trace_id) -- LangSmith rejects a
+    forced/mismatched trace_id on an unparented run. This intentionally does
+    NOT re-run any LangChain step -- it just logs a record of work that
+    already happened, so LangSmith API version differences in
+    create_run/update_run are the only risk here, not extra cost."""
     run_id = uuid.uuid4()
     try:
         client.create_run(
@@ -84,9 +88,13 @@ def _log_duplicate_run(
             run_type="chain",
             inputs=inputs,
             project_name=project_name,
-            trace_id=trace_id,
             start_time=datetime.now(timezone.utc),
-            extra={"metadata": {"request_id": request_id}},
+            extra={
+                "metadata": {
+                    "request_id": request_id,
+                    "distributed_trace_id": distributed_trace_id,
+                }
+            },
             tags=["duplicate", "instrumentation:langsmith-sdk"],
         )
         client.update_run(

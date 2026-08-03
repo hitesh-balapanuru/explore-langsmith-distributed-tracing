@@ -1,62 +1,40 @@
 """Initializes OpenLLMetry (Traceloop SDK) with traces exported directly to
-LangSmith's OTLP ingestion endpoint.
+LangSmith's OTLP ingestion endpoint (the "distributed" project only).
 
-Multi-project fan-out: Traceloop.init() registers the primary exporter,
-sending every span to LANGSMITH_PROJECT (the "distributed" project). We then
-add two MORE span processors directly onto that same global TracerProvider:
+Multi-project fan-out: LangSmith's OTLP ingestion identifies a run by
+(trace_id, span_id) GLOBALLY, not per-project. Registering a second
+SpanProcessor on the same TracerProvider and re-exporting the *same* span
+object to a second project's OTLP endpoint gets rejected with
+`409 Run create payload already received` -- this was tried first and
+confirmed broken against a real LangSmith account.
 
-  - a full duplicate of every span -> LANGSMITH_PROJECT_AGENT
-  - a filtered duplicate (retrieval spans only) -> LANGSMITH_PROJECT_VECTORDB
-
-Because OTel span processors all observe the same already-recorded span,
-this fan-out is genuinely free -- no re-execution, no extra Anthropic calls,
-just extra HTTP POSTs to LangSmith per span. This is the one place in the
-repo where "duplicate to N projects" has zero cost beyond network calls,
-unlike the native LangSmith SDK side (agent-langsmith) where the same goal
-requires manually reconstructing flat summary runs.
-
-This must run before `rag_chain.build_answer_chain()`/`build_retriever()`
-are called, since Traceloop patches the LangChain/Anthropic clients on init
-to auto-instrument them.
+The actual working mechanism: after the real span finishes, manually emit a
+*separate* span that shares the same trace_id but gets a fresh span_id (via
+a NonRecordingSpan used as a fake parent context), sent through its own
+dedicated single-project TracerProvider. Different span_id means LangSmith
+sees a distinct run, so no collision -- see duplicate_span() below. This
+must run before rag_chain's build_answer_chain()/build_retriever(), since
+Traceloop patches the LangChain/Anthropic clients on init.
 """
 
 import os
 
-from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.export import (
-    SimpleSpanProcessor,
-    SpanExporter,
-    SpanProcessor,
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.trace import (
+    NonRecordingSpan,
+    SpanContext,
+    TraceFlags,
+    set_span_in_context,
 )
 from traceloop.sdk import Traceloop
 
-
-class FilteringSpanProcessor(SpanProcessor):
-    """Wraps another SpanProcessor and only forwards spans matching
-    `predicate`, so a single TracerProvider can send a subset of spans to a
-    different destination than the rest."""
-
-    def __init__(self, wrapped: SpanProcessor, predicate) -> None:
-        self._wrapped = wrapped
-        self._predicate = predicate
-
-    def on_start(self, span, parent_context=None) -> None:
-        pass
-
-    def on_end(self, span: ReadableSpan) -> None:
-        if self._predicate(span):
-            self._wrapped.on_end(span)
-
-    def shutdown(self) -> None:
-        self._wrapped.shutdown()
-
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        return self._wrapped.force_flush(timeout_millis)
+_tracers: dict = {}
 
 
-def _otlp_exporter(project_name: str, endpoint: str, api_key: str) -> SpanExporter:
+def _otlp_exporter(project_name: str, endpoint: str, api_key: str) -> OTLPSpanExporter:
     return OTLPSpanExporter(
         endpoint=f"{endpoint}/v1/traces",
         headers={"x-api-key": api_key, "Langsmith-Project": project_name},
@@ -71,9 +49,11 @@ def init_tracing() -> None:
     distributed_project = os.environ.get("LANGSMITH_PROJECT", "distributed")
     agent_project = os.environ.get("LANGSMITH_PROJECT_AGENT", "agent")
     vectordb_project = os.environ.get(
-        "LANGSMITH_PROJECT_VECTORDB", "vector database"
+        "LANGSMITH_PROJECT_VECTORDB", "vector_database"
     )
 
+    # Primary: every real span from Traceloop's auto-instrumentation -> the
+    # "distributed" project only.
     Traceloop.init(
         app_name="agent-openllmetry",
         api_endpoint=endpoint,
@@ -81,20 +61,39 @@ def init_tracing() -> None:
         disable_batch=True,
     )
 
-    # Traceloop.init() registers a real SDK TracerProvider globally; we add
-    # more processors onto that same instance so every span it already
-    # records also gets exported to the extra projects below.
-    provider = trace.get_tracer_provider()
-
-    provider.add_span_processor(
-        SimpleSpanProcessor(_otlp_exporter(agent_project, endpoint, api_key))
-    )
-
-    provider.add_span_processor(
-        FilteringSpanProcessor(
-            SimpleSpanProcessor(
-                _otlp_exporter(vectordb_project, endpoint, api_key)
-            ),
-            predicate=lambda span: span.name == "agent-openllmetry.retrieve",
+    # One dedicated, single-exporter TracerProvider per duplicate destination
+    # -- kept separate from Traceloop's global provider so manual duplicate
+    # spans below never also get exported to "distributed" a second time.
+    for key, project_name in (("agent", agent_project), ("vectordb", vectordb_project)):
+        provider = TracerProvider(
+            resource=Resource.create({"service.name": "agent-openllmetry"})
         )
+        provider.add_span_processor(
+            SimpleSpanProcessor(_otlp_exporter(project_name, endpoint, api_key))
+        )
+        _tracers[key] = provider.get_tracer("agent-openllmetry.duplicates")
+
+
+def duplicate_span(
+    project: str,
+    name: str,
+    trace_id: int,
+    parent_span_id: int,
+    start_time_ns: int,
+    end_time_ns: int,
+    attributes: dict,
+) -> None:
+    """Emits a standalone span sharing `trace_id` with the real trace, but
+    with a fresh span_id, into `project` ("agent" or "vectordb")."""
+    tracer = _tracers[project]
+    fake_parent_ctx = SpanContext(
+        trace_id=trace_id,
+        span_id=parent_span_id,
+        is_remote=True,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
     )
+    parent_context = set_span_in_context(NonRecordingSpan(fake_parent_ctx))
+    span = tracer.start_span(
+        name, context=parent_context, start_time=start_time_ns, attributes=attributes
+    )
+    span.end(end_time=end_time_ns)

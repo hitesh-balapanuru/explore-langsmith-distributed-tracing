@@ -95,39 +95,55 @@ this same request's copies in the other three projects.
 Beyond the one connected trace in the `distributed` project, every service
 also posts a duplicate of its own work into a **per-service LangSmith
 project** — `frontend`, `agent` (used by whichever agent handled the
-request), and `vector database` (retrieval only). That's 4 projects total,
+request), and `vector_database` (retrieval only). That's 4 projects total,
 configured via `LANGSMITH_PROJECT`, `LANGSMITH_PROJECT_FRONTEND`,
 `LANGSMITH_PROJECT_AGENT`, and `LANGSMITH_PROJECT_VECTORDB` in `.env` — set
 these to match whatever you've already created in LangSmith if the names
 differ.
 
 This is a deliberate trade-off, not a LangSmith feature: **a trace belongs to
-exactly one project**, decided by its root run. There's no way to have one
-connected trace natively split across four projects, so getting a
-per-service view *and* a connected view means posting the data twice. The
-mechanism differs depending on which side of the repo you're looking at,
-which is itself an interesting SDK-comparison point:
+exactly one project**, decided by its root run, and (confirmed against a
+real LangSmith account) **a run's identity can't be transplanted into
+another project's trace** either. Two things that seem like they should work
+don't:
 
-- **`agent-openllmetry` and `frontend`** (OpenTelemetry-based): the fan-out
-  is genuinely free. Each has a single `TracerProvider` with *multiple* span
-  processors registered on it — every span already being recorded gets
-  exported once per processor. No re-execution, no extra Anthropic calls,
-  just an extra OTLP POST per span per destination project.
-- **`agent-langsmith`** (native LangSmith SDK): harder, because a
-  `RunTree`/`@traceable` trace posts to one ambient project per execution
-  context — you can't have one live chain execution auto-instrument into two
-  projects with full nested detail. Instead, after the single chain
-  execution completes, the code manually posts *flat* summary runs (question
-  in, answer out, no nested retriever/model sub-spans) to the `agent` and
-  `vector database` projects via `Client.create_run`/`update_run`.
+- Registering a *second* `SpanProcessor` on the same `TracerProvider` and
+  re-exporting the exact same span to a second project's OTLP endpoint gets
+  rejected with `409 Run create payload already received` — LangSmith's OTLP
+  ingestion treats `(trace_id, span_id)` as globally unique, not scoped per
+  project.
+- Passing an explicit `trace_id` on a fresh, unparented run/RunTree (native
+  SDK) gets rejected with `400 invalid dotted_order` — the API requires
+  `dotted_order` you don't have unless you also compute it yourself.
 
-**Correlating a request across all four projects**: every duplicate run
-carries the *same* `trace_id` as the connected trace (native SDK duplicates
-pass `trace_id=` explicitly; OTel duplicates get it for free since it's the
-same span), plus a `request_id` value in metadata as a fallback. In each
-project's trace search, filter by that trace ID or `request_id` to find this
-request's copy. There's no single UI that shows all four at once — this is
-manual, cross-project correlation, not native distributed tracing.
+So every duplicate is its own real, independent run, and the two sides of
+the repo get there differently (itself an interesting SDK-comparison point):
+
+- **`agent-openllmetry` and `frontend`** (OpenTelemetry-based): after the
+  real span ends, a *second*, dedicated single-exporter `TracerProvider`
+  (pointed at the per-service project) manually emits a **new span that
+  shares the real trace_id but gets a fresh span_id** — done by wrapping the
+  real span's `SpanContext` as a fake parent (`trace.wrapSpanContext` /
+  Python's `NonRecordingSpan`) so the new span inherits `trace_id` without
+  colliding on `span_id`. One extra OTLP POST per duplicate, no
+  re-execution.
+- **`agent-langsmith`** (native LangSmith SDK): after the single chain
+  execution completes, the code posts *flat* summary runs (question in,
+  answer out, no nested retriever/model sub-spans) to the `agent` and
+  `vector_database` projects via `Client.create_run`/`update_run` — each as
+  its **own root run with its own trace_id**, since a matching trace_id
+  isn't achievable here without a hand-computed `dotted_order`.
+
+**Correlating a request across all four projects**: the OTel-based
+duplicates (`agent-openllmetry`, `frontend`) do share the real trace_id, so
+those can be found by trace ID. The native-SDK duplicates (`agent-langsmith`
+and frontend's LangSmith-path copy) cannot share it, so use the
+`request_id` metadata field instead — it's stamped on every run in every
+project regardless of instrumentation, making it the one correlation key
+that works everywhere. The real distributed trace_id is also echoed into
+those runs' metadata (`distributed_trace_id`) for reference. There's no
+single UI that shows all four at once — this is manual, cross-project
+correlation, not native distributed tracing.
 
 ## Why two folders instead of one
 

@@ -9,14 +9,15 @@ propagator and attach it as the current context before invoking the chain, so
 every span Traceloop records here is a child of the frontend's span in the
 same trace, landing in LANGSMITH_PROJECT (the "distributed" project).
 
-Multi-project fan-out (see tracing_init.py): every span is ALSO duplicated
-into LANGSMITH_PROJECT_AGENT, and the "agent-openllmetry.retrieve" span
-specifically is ALSO duplicated into LANGSMITH_PROJECT_VECTORDB -- all for
-free, since it's the same recorded span exported to multiple destinations.
+Multi-project fan-out (see tracing_init.py): after the real work finishes, we
+manually emit two duplicate spans sharing the same trace_id -- one for the
+whole request into LANGSMITH_PROJECT_AGENT, one for just retrieval into
+LANGSMITH_PROJECT_VECTORDB.
 """
 
 import logging
 import os
+import time
 import uuid
 
 from fastapi import FastAPI, Request
@@ -25,7 +26,7 @@ from opentelemetry import trace
 from opentelemetry.propagate import extract
 from pydantic import BaseModel
 
-from tracing_init import init_tracing
+from tracing_init import duplicate_span, init_tracing
 
 init_tracing()
 
@@ -56,16 +57,19 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
 
     token = otel_context.attach(ctx)
     try:
+        answer_start_ns = time.time_ns()
         with tracer.start_as_current_span(
             "agent-openllmetry.answer_question"
         ) as span:
             span.set_attribute("airmf.question", body.question)
             span.set_attribute("langsmith.metadata.request_id", request_id)
+            trace_id = span.get_span_context().trace_id
+            answer_span_id = span.get_span_context().span_id
             logger.info(
-                "Handling request under trace %s",
-                format(span.get_span_context().trace_id, "032x"),
+                "Handling request under trace %s", format(trace_id, "032x")
             )
 
+            retrieve_start_ns = time.time_ns()
             with tracer.start_as_current_span(
                 "agent-openllmetry.retrieve"
             ) as retrieve_span:
@@ -74,13 +78,41 @@ async def query(body: QueryRequest, request: Request) -> QueryResponse:
                 )
                 docs = retriever.invoke(body.question)
                 retrieve_span.set_attribute("airmf.retrieved_count", len(docs))
+                retrieve_span_id = retrieve_span.get_span_context().span_id
+            retrieve_end_ns = time.time_ns()
 
             context = format_docs(docs)
             answer = answer_chain.invoke(
                 {"question": body.question, "context": context}
             )
+        answer_end_ns = time.time_ns()
     finally:
         otel_context.detach(token)
+
+    try:
+        duplicate_span(
+            "agent",
+            "agent-openllmetry.answer_question",
+            trace_id,
+            answer_span_id,
+            answer_start_ns,
+            answer_end_ns,
+            {"airmf.question": body.question, "langsmith.metadata.request_id": request_id},
+        )
+        duplicate_span(
+            "vectordb",
+            "agent-openllmetry.retrieve",
+            trace_id,
+            retrieve_span_id,
+            retrieve_start_ns,
+            retrieve_end_ns,
+            {
+                "airmf.retrieved_count": len(docs),
+                "langsmith.metadata.request_id": request_id,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to emit duplicate spans")
 
     return QueryResponse(answer=answer)
 
